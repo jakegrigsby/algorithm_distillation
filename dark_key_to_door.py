@@ -18,7 +18,7 @@ class RoomKeyDoor(gym.Env):
         self.size = size
         self.H = max_episode_steps
         self.observation_space = gym.spaces.Box(
-            low=0.0, high=1.0, shape=(4 + 4 if self.dark else 0,)
+            low=0.0, high=1.0, shape=(4 if self.dark else 8,)
         )
         self.action_space = gym.spaces.Discrete(5)
         self.goal_location = goal_location
