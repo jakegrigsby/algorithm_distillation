@@ -102,9 +102,6 @@ class RL2DarkRoomDoor(KGoalEnv):
         soft_done = done
         self.current_episode_return += reward
         if soft_done:
-            print(
-                f"\t\tEpisode {self.current_episode}, Return {self.current_episode_return}"
-            )
             self.current_episode += 1
             self.current_episode_return = 0
             self.episode_step_count = 0
@@ -113,7 +110,7 @@ class RL2DarkRoomDoor(KGoalEnv):
 
 def train_rl2(args):
 
-    NAME = f"RL2_size_{args.size}_ep_{args.episodes}_steps_{args.max_episode_steps}_meta_info_{args.show_meta_info}"
+    NAME = f"RL2_size_{args.room_size}_ep_{args.episodes}_steps_{args.max_episode_steps}_meta_info_{not args.hide_meta_info}"
 
     def make_env(args, split):
         env = RL2DarkRoomDoor(
@@ -126,29 +123,27 @@ def train_rl2(args):
             env_name=NAME,
             max_goal_seq_length=1,
             make_dset=True,
-            dset_root=args.buffer_directory,
+            dset_root=args.buffer_dir,
             dset_name=NAME,
             dset_split=split,
         )
         return env
 
-    train_envs = ParallelEnvs([partial(make_env, args, "train") for _ in range(8)])
-    val_envs = ParallelEnvs([partial(make_env, args, "val") for _ in range(4)])
+    train_envs = ParallelEnvs([partial(make_env, args, "train") for _ in range(16)])
+    val_envs = ParallelEnvs([partial(make_env, args, "val") for _ in range(8)])
     test_envs = val_envs
 
     experiment = gcrl2.Experiment(
         envs=(train_envs, val_envs, test_envs),
         gpus=args.gpus,
         run_name=NAME,
-        dset_root=args.buffer_directory,
+        dset_root=args.buffer_dir,
         dset_name=NAME,
         log_to_wandb=not args.no_log,
         dloader_workers=10,
         epochs=args.epochs,
-        train_timesteps_per_epoch=2 * args.episodes * args.max_episode_steps
-        + args.episodes,
-        val_timesteps_per_epoch=2 * args.episodes * args.max_episode_steps
-        + args.episodes,
+        train_timesteps_per_epoch=args.episodes * args.max_episode_steps + 1,
+        val_timesteps_per_epoch=2 * args.episodes * args.max_episode_steps + 1,
         train_grad_updates_per_epoch=1000,
         val_interval=15,
         relabel="none",
