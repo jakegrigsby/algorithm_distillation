@@ -24,7 +24,17 @@ class RoomKeyDoor(gym.Env):
         self.goal_location = goal_location
         self.key_location = key_location
 
-    def reset(self):
+    def reset(self, new_task=True):
+        if new_task:
+            key, goal = self.generate_task()
+            self.goal = np.array(goal)
+            self.key = np.array(key)
+        self.has_key = False
+        self.t = 0
+        self.pos = np.array([0, 0])
+        return self.obs()
+
+    def generate_task(self):
         key = (
             random.choices(range(self.size), k=2)
             if self.key_location == "random"
@@ -35,12 +45,7 @@ class RoomKeyDoor(gym.Env):
             if self.goal_location == "random"
             else self.goal_location
         )
-        self.has_key = False
-        self.t = 0
-        self.goal = np.array(goal)
-        self.key = np.array(key)
-        self.pos = np.array([0, 0])
-        return self.obs()
+        return key, goal
 
     def step(self, action: int):
         dirs = [[0, -1], [-1, 0], [0, 1], [1, 0], [0, 0]]

@@ -1,0 +1,28 @@
+import gcrl2
+
+gcrl2.learning.Experiment.architecture = "transformer"
+gcrl2.learning.Experiment.warmup_epochs = 10
+gcrl2.learning.Experiment.max_seq_len = None
+gcrl2.learning.Experiment.grad_clip = 2.0
+gcrl2.learning.Experiment.l2_coeff = 1e-4
+gcrl2.learning.Experiment.half_precision = True
+gcrl2.learning.Experiment.init_learning_rate = 3e-4
+
+gcrl2.nets.actor_critic.Actor.n_layers = 2
+gcrl2.nets.actor_critic.Actor.d_hidden = 256
+gcrl2.nets.actor_critic.Actor.cont_dist = "squashed"
+gcrl2.nets.actor_critic.NCritics.d_hidden = 256
+gcrl2.nets.actor_critic.NCritics.n_layers = 2
+gcrl2.nets.actor_critic.Actor.log_std_low = -5.
+gcrl2.nets.actor_critic.Actor.log_std_high = 2.
+
+gcrl2.nets.transformer.TransformerEncoder.d_model = 128
+gcrl2.nets.transformer.TransformerEncoder.d_ff = 512
+gcrl2.nets.transformer.TransformerEncoder.n_heads = 8
+gcrl2.nets.transformer.TransformerEncoder.layers = 3
+gcrl2.nets.transformer.TransformerEncoder.dropout_emb = .05
+gcrl2.nets.transformer.TransformerEncoder.dropout_ff = .05
+gcrl2.nets.transformer.TransformerEncoder.dropout_attn = 0.0
+gcrl2.nets.transformer.TransformerEncoder.dropout_qkv = 0.0
+gcrl2.nets.transformer.TransformerEncoder.attention = "flash"
+gcrl2.nets.transformer.TransformerEncoder.norm = "layer"

@@ -1,0 +1,16 @@
+import gcrl2
+
+gcrl2.learning.Experiment.on_policy = False
+gcrl2.learning.Experiment.critic_loss_weight = 10.
+gcrl2.agent.Agent.offline_coeff = 0.1
+gcrl2.agent.Agent.online_coeff = 1.0
+gcrl2.agent.Agent.fake_filter = False
+gcrl2.agent.Agent.gamma = .999
+gcrl2.agent.Agent.num_critics = 4
+gcrl2.agent.Agent.num_critics_td = 2
+gcrl2.agent.Agent.tau = .002
+gcrl2.agent.Agent.dr3_term = 0.0
+gcrl2.agent.Agent.entropy_term = 0
+gcrl2.agent.Agent.popart = True
+gcrl2.agent.Agent.normalize_inputs = True
+gcrl2.agent.Agent.loss_mask_p = 0.0
