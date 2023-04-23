@@ -6,6 +6,16 @@ import gym
 
 
 class RoomKeyDoor(gym.Env):
+    """
+    A version of the Dark Room Key-Door Env.
+
+    Guessing on a couple details that make sure it's
+    solvable by a non-recurrent policy. AD's A3C
+    baselines might've been able to skip this. Could be
+    why the learning curves are so much longer than this
+    version.
+    """
+
     def __init__(
         self,
         dark: bool,
@@ -66,6 +76,7 @@ class RoomKeyDoor(gym.Env):
     def obs(self):
         x, y = self.pos
         norm = lambda j: float(j) / self.size
+        # time and has_key keep this fully observed
         base = [norm(x), norm(y), self.has_key, float(self.t) / self.H]
         if not self.dark:
             goal_x, goal_y = self.goal

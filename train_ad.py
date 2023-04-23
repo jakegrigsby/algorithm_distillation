@@ -25,6 +25,7 @@ def parse_args():
     )
     parser.add_argument("--context_len", type=int, default=300)
     parser.add_argument("--buffer_dir", type=str, default="buffers/")
+    parser.add_argument("--epochs", type=int, default=100)
     args = parser.parse_args()
     return args
 
@@ -86,12 +87,14 @@ def train(args):
     else:
         assert False
 
+    # Train
     experiment = Experiment(
         envs=envs,
         run_name=args.run_name,
         gpus=args.gpus,
         train_dset_files=train_files,
         val_dset_files=val_files,
+        epochs=args.epochs,
         log_to_wandb=not args.no_log,
         architecture=args.model,
         context_len=args.context_len,

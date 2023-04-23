@@ -57,7 +57,8 @@ class ADDataset(Dataset):
         # non-shifted actions are the BC labels
         a = a[time].astype(np.int_)
 
-        # create meta-rl input format
+        # create meta-rl input format; (s, a, r, d) order needs to
+        # be consistent in environment loop
         seq = np.concatenate((s, prev_a_one_hot, r, d), axis=-1)
         return seq, a
 
