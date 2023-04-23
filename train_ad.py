@@ -66,9 +66,9 @@ def gather_dset_files(
 def train(args):
     # Create Env
     if args.experiment in ["ad_dark", "bc_dark", "rl2_dark"]:
-        env = RoomKeyDoor(dark=True, size=8, max_episode_steps=50)
+        envs = [RoomKeyDoor(dark=True, size=8, max_episode_steps=50) for _ in range(2)]
     else:
-        env = RoomKeyDoor(dark=False, size=8, max_episode_steps=50)
+        envs = [RoomKeyDoor(dark=False, size=8, max_episode_steps=50) for _ in range(2)]
 
     # Load Correct Source RL Files
     if args.experiment in ["ad_dark", "ad_light"]:
@@ -83,7 +83,7 @@ def train(args):
         assert False
 
     experiment = Experiment(
-        env=env,
+        envs=envs,
         run_name=args.run_name,
         gpus=args.gpus,
         train_dset_files=train_files,

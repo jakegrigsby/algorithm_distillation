@@ -25,7 +25,7 @@ from datasets import ADDataset
 
 @dataclass
 class Experiment:
-    env: gym.Env
+    envs: List[gym.Env]
 
     # General
     run_name: str
@@ -43,8 +43,7 @@ class Experiment:
     # Learning Schedule
     epochs: int = 100
     train_grad_updates_per_epoch: int = 1000
-    eval_timesteps: int = 50 * 20
-    eval_episodes: int = 10
+    eval_timesteps: int = 100
     val_interval: int = 2
     val_checks_per_epoch: int = 50
     log_interval: int = 250
@@ -130,8 +129,8 @@ class Experiment:
         )
 
     def init_model(self):
-        action_size = self.env.action_space.n
-        state_size = self.env.observation_space.shape[0] + action_size + 1 + 1
+        action_size = self.envs[0].action_space.n
+        state_size = self.envs[0].observation_space.shape[0] + action_size + 1 + 1
 
         if self.architecture == "transformer":
             traj_encoder = TransformerEncoder(
@@ -161,25 +160,34 @@ class Experiment:
 
     def interact(
         self,
-        env: gym.Env,
+        envs: List[gym.Env],
         timesteps: int,
         verbose: bool = False,
         render: bool = False,
     ):
-        init_state = (
-            torch.from_numpy(env.reset(new_task=True))
-            .to(self.DEVICE)
-            .float()
-            .unsqueeze(0)
-        )
-        init_action = torch.zeros((1, env.action_space.n), device=self.DEVICE).float()
+        # evaluation is done in fake parallel mode
+        num_envs = len(envs)
+        context = []
+        current_returns = [0.0 for _ in range(num_envs)]
+        return_history = [[] for _ in range(num_envs)]
+
+        # fill each context with the starting observation
+        init_context = []
+        init_action = torch.zeros(
+            (1, envs[0].action_space.n), device=self.DEVICE
+        ).float()
         init_done = torch.zeros((1, 1), device=self.DEVICE).float()
         init_rew = torch.zeros_like(init_done)
-        init_seq = torch.cat((init_state, init_action, init_rew, init_done), dim=-1)
-        context = [init_seq]
-
-        current_return = 0.0
-        return_history = []
+        for i, env in enumerate(envs):
+            init_state = (
+                torch.from_numpy(env.reset(new_task=True))
+                .to(self.DEVICE)
+                .float()
+                .unsqueeze(0)
+            )
+            init_seq = torch.cat((init_state, init_action, init_rew, init_done), dim=-1)
+            init_context.append(init_seq)
+        context.append(torch.stack(init_context, dim=0))
 
         if verbose:
             iter_ = tqdm(
@@ -194,42 +202,52 @@ class Experiment:
 
         for step in iter_:
 
-            current_seq = torch.cat(context[-self.context_len :], dim=0).unsqueeze(0)
+            # gather up to the last `context_len` timesteps
+            current_seq = torch.cat(context[-self.context_len :], dim=1)
             with torch.no_grad():
                 with self.caster():
+                    # sample actions corresponding to the current timestep
                     action = self.policy.get_actions(states=current_seq)
-            raw_action = int(action.cpu().item())
-            next_state, rew, done, _ = env.step(raw_action)
-            current_return += rew
-            if done:
-                return_history.append((step, current_return))
-                current_return = 0.0
-                next_state = env.reset(new_task=False)
 
-            ctxt_action = F.one_hot(
-                action.squeeze(0), num_classes=env.action_space.n
-            ).float()
-            ctxt_state = (
-                torch.from_numpy(next_state).to(self.DEVICE).float().unsqueeze(0)
-            )
-            ctxt_rew = torch.Tensor([rew]).to(self.DEVICE).float().unsqueeze(0)
-            ctxt_done = torch.Tensor([done]).to(self.DEVICE).float().unsqueeze(0)
-            next_ctxt = torch.cat(
-                (ctxt_state, ctxt_action, ctxt_rew, ctxt_done), dim=-1
-            )
-            context.append(next_ctxt)
+            # execute those actions in each env
+            next_context = []
+            for i, env in enumerate(envs):
+                raw_action = int(action[i].cpu().item())
+                next_state, rew, done, _ = env.step(raw_action)
+                current_returns[i] += rew
+                if done:
+                    return_history[i].append((step, current_returns[i]))
+                    current_returns[i] = 0.0
+                    # keep the task the same!
+                    next_state = env.reset(new_task=False)
+
+                # build meta-info for this timestep in this env
+                ctxt_action = torch.zeros(
+                    (1, env.action_space.n), device=self.DEVICE
+                ).float()
+                ctxt_action[:, raw_action] = 1.0
+                ctxt_state = (
+                    torch.from_numpy(next_state).to(self.DEVICE).float().unsqueeze(0)
+                )
+                ctxt_rew = torch.Tensor([rew]).to(self.DEVICE).float().unsqueeze(0)
+                ctxt_done = torch.Tensor([done]).to(self.DEVICE).float().unsqueeze(0)
+                next_ctxt_i = torch.cat(
+                    (ctxt_state, ctxt_action, ctxt_rew, ctxt_done), dim=-1
+                )
+                next_context.append(next_ctxt_i)
+            # extend the context sequence by 1
+            context.append(torch.stack(next_context, dim=0))
 
             if render:
+                # this only renders the last of the "parallel" envs
                 env.render()
 
         return return_history
 
     def evaluate_val(self):
-        all_returns = [
-            self.interact(self.env, self.eval_timesteps, verbose=True, render=True)
-            for _ in range(self.eval_episodes)
-        ]
-        breakpoint()
+        all_returns = self.interact(
+            self.envs, self.eval_timesteps, verbose=True, render=True
+        )
         figures = self.make_evaluation_figures(all_returns)
         self.log(figures, "val")
 
