@@ -75,7 +75,6 @@ class Agent(nn.Module):
     def forward(self, states, actions, log_step: bool):
         self.update_info = {}
 
-        breakpoint()
         B, L, D_state = states.shape
         assert D_state == self.state_dim
         D_emb = self.traj_encoder.emb_dim
@@ -84,5 +83,5 @@ class Agent(nn.Module):
         s_rep = self.traj_encoder(states=states, mask=attn_mask)
         assert s_rep.shape == (B, L, D_emb)
         a_dist = self.actor(s_rep)
-        loss = (-a_dist.log_prob(actions).unsqueeze(-1)).mean()
+        loss = (-a_dist.log_prob(actions.squeeze(-1))).mean()
         return loss

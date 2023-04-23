@@ -23,6 +23,20 @@ from agent import Agent
 from datasets import ADDataset
 
 
+def get_grad_norm(model):
+    total_norm = 0.0
+    for p in model.parameters():
+        try:
+            param = p.grad.data
+        except AttributeError:
+            continue
+        else:
+            param_norm = param.norm(2)
+            total_norm += param_norm.item() ** 2
+    total_norm = total_norm ** (1.0 / 2)
+    return total_norm
+
+
 @dataclass
 class Experiment:
     envs: List[gym.Env]
@@ -39,22 +53,23 @@ class Experiment:
     architecture: str = "transformer"
     context_len: int = 800
     force_dark: bool = True
+    sample_actions: bool = True
 
     # Learning Schedule
     epochs: int = 100
-    train_grad_updates_per_epoch: int = 1000
-    eval_timesteps: int = 100
-    val_interval: int = 2
+    grad_updates_per_epoch: int = 5000
+    eval_timesteps: int = 17500
+    val_interval: int = 1
     val_checks_per_epoch: int = 50
     log_interval: int = 250
 
     # Optimization
-    batch_size: int = 24
-    dloader_workers: int = 12
-    init_learning_rate: float = 5e-4
-    warmup_epochs: int = 5
+    batch_size: int = 32
+    dloader_workers: int = 14
+    learning_rate: float = 2e-4
+    warmup_epochs: int = 2
     grad_clip: float = 1.0
-    l2_coeff: float = 1e-4
+    l2_coeff: float = 1e-3
     half_precision: bool = True
 
     def start(self):
@@ -72,11 +87,13 @@ class Experiment:
             buffer_filenames=self.train_dset_files,
             force_dark=self.force_dark,
             context_length=self.context_len,
+            epoch_length=self.grad_updates_per_epoch * self.batch_size,
         )
         self.val_dset = ADDataset(
             buffer_filenames=self.val_dset_files,
             force_dark=self.force_dark,
             context_length=self.context_len,
+            epoch_length=self.val_checks_per_epoch * self.batch_size,
         )
 
     def init_dloaders(self):
@@ -112,20 +129,22 @@ class Experiment:
     def init_optimizer(self):
         self.optimizer = torch.optim.AdamW(
             self.policy.trainable_params,
-            lr=self.init_learning_rate,
+            lr=self.learning_rate,
             weight_decay=self.l2_coeff,
         )
+        # not messing with cosine schedule; but at least use a linear warmup
         self.warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
             self.optimizer,
             start_factor=1e-8,
             end_factor=1.0,
-            total_iters=self.train_grad_updates_per_epoch * self.warmup_epochs,
+            total_iters=self.grad_updates_per_epoch * self.warmup_epochs,
         )
+        # half precision features are for FlashAttention
         self.grad_scaler = torch.cuda.amp.GradScaler(
             enabled=self.half_precision,
             init_scale=10000.0,
             growth_factor=1.5,
-            growth_interval=self.train_grad_updates_per_epoch,
+            growth_interval=self.grad_updates_per_epoch // 8,
         )
 
     def init_model(self):
@@ -165,13 +184,22 @@ class Experiment:
         verbose: bool = False,
         render: bool = False,
     ):
+        """
+        Main environment interaction loop. Sample a new task,
+        and then rollout the in-context learner on that same task
+        for `timesteps`, keeping track of its learning history along
+        the way.
+        """
         # evaluation is done in fake parallel mode
         num_envs = len(envs)
         context = []
         current_returns = [0.0 for _ in range(num_envs)]
         return_history = [[] for _ in range(num_envs)]
 
-        # fill each context with the starting observation
+        # fill each context with the starting observation.
+        # careful to match the training format where the first
+        # timestep has fake actions, reward, and dones (because
+        # all we've seen so far is the initial state).
         init_context = []
         init_action = torch.zeros(
             (1, envs[0].action_space.n), device=self.DEVICE
@@ -207,7 +235,9 @@ class Experiment:
             with torch.no_grad():
                 with self.caster():
                     # sample actions corresponding to the current timestep
-                    action = self.policy.get_actions(states=current_seq)
+                    action = self.policy.get_actions(
+                        states=current_seq, sample=self.sample_actions
+                    )
 
             # execute those actions in each env
             next_context = []
@@ -246,12 +276,31 @@ class Experiment:
 
     def evaluate_val(self):
         all_returns = self.interact(
-            self.envs, self.eval_timesteps, verbose=True, render=True
+            self.envs, self.eval_timesteps, verbose=True, render=False
+        )
+        # first take avg of last 5 episodes in each env, then avg over parallel envs
+        mean_last_five_ep_return = np.mean(
+            [np.mean([r[i][-1] for i in range(-5, 0)]) for r in all_returns]
         )
         figures = self.make_evaluation_figures(all_returns)
-        self.log(figures, "val")
+        self.log(
+            figures | {"mean_last_five_ep_return": mean_last_five_ep_return}, "val"
+        )
 
     def make_evaluation_figures(self, return_history):
+        """
+        Recreating the main `in-context learning' figure of the AD paper.
+        However, I made a mistake in allowing episodes to end early when
+        the agent solves the task. Good agents finish earlier and solve more
+        episodes over the same evaluation window. This makes it difficult
+        to draw the same smooth learning curves as AD Figure 4.
+
+        Instead we can plot the individual learning curve of every env
+        on the same chart, which is messy but at least gives a sense of
+        improvement. We also show the same info as a scatter plot with a linear
+        line of best fit; positive slope indicates in-context learning.
+        """
+        # chaotic line plot of every env
         fig = plt.figure()
         ax = plt.axes()
         for env_history in return_history:
@@ -260,10 +309,49 @@ class Experiment:
             ax.plot(steps, returns)
         ax.set_xlabel("Meta-Learning Timesteps")
         ax.set_ylabel("Episode Return")
+        ax.set_ylim([0.0, 2.0])
         plt.tight_layout()
-        img = wandb.Image(fig)
+        line_chart = wandb.Image(fig)
         plt.close()
-        return {"evaluation": img}
+
+        # same info in a scatter plot with local linear line of best fit
+        fig = plt.figure()
+        ax = plt.axes()
+        xs = []
+        ys = []
+        for env_history in return_history:
+            steps = [d[0] for d in env_history]
+            xs += steps
+            returns = [d[1] for d in env_history]
+            ys += returns
+            ax.scatter(steps, returns)
+        xs_ys = sorted(zip(xs, ys), key=lambda xy: xy[0])
+        intervals = [
+            range(i, i + 300) for i in range(0, self.eval_timesteps - 300, 300)
+        ]
+        scatter_segments = [[] for _ in intervals]
+        for x, y in xs_ys:
+            for i, interval in enumerate(intervals):
+                if x in interval:
+                    scatter_segments[i].append((x, y))
+
+        for scatter_segment in scatter_segments:
+            x, y = zip(*scatter_segment)
+            line_of_best_fit = np.poly1d(np.polyfit(np.array(x), np.array(y), 1))
+            ax.plot(
+                x,
+                line_of_best_fit(x),
+                linestyle="dashed",
+                color="blue",
+            )
+        ax.set_xlabel("Meta-Learning Timesteps")
+        ax.set_ylabel("Episode Return")
+        ax.set_ylim([0.0, 2.0])
+        plt.tight_layout()
+        scatter_chart = wandb.Image(fig)
+        plt.close()
+
+        return {"evaluation (line)": line_chart, "evaluation (scatter)": scatter_chart}
 
     def log(self, metrics_dict, key):
         log_dict = {}
@@ -279,21 +367,21 @@ class Experiment:
 
     def compute_loss(self, seq, actions, log_step: bool):
         with self.caster():
-            loss = self.policy(seq, actions)
+            loss = self.policy(
+                seq.to(self.DEVICE), actions.to(self.DEVICE), log_step=log_step
+            )
         update_info = self.policy.update_info
         return {"loss": loss} | update_info
 
     def _get_grad_norms(self):
-        ggn = utils.get_grad_norm
         grads = dict(
-            actor_grad_norm=ggn(self.policy.actor),
-            traj_encoder_grad_norm=ggn(self.policy.traj_encoder),
+            actor_grad_norm=get_grad_norm(self.policy.actor),
+            traj_encoder_grad_norm=get_grad_norm(self.policy.traj_encoder),
         )
-        print(grads)
         return grads
 
     def train_step(self, batch: Tuple[torch.Tensor], log_step: bool):
-        l = self.compute_loss(*batch)
+        l = self.compute_loss(*batch, log_step=log_step)
         self.optimizer.zero_grad(set_to_none=True)
         self.grad_scaler.scale(l["loss"]).backward()
         self.grad_scaler.unscale_(self.optimizer)
@@ -302,10 +390,8 @@ class Experiment:
         nn.utils.clip_grad_norm_(self.policy.trainable_params, max_norm=self.grad_clip)
         self.grad_scaler.step(self.optimizer)
         self.grad_scaler.update()
-
         if self.half_precision and log_step:
             l["grad_scaler_scale"] = self.grad_scaler.get_scale()
-
         return l
 
     def caster(self):
@@ -314,7 +400,7 @@ class Experiment:
         else:
             return contextlib.suppress()
 
-    def val_step(self, batch, epoch: int):
+    def val_step(self, batch):
         with torch.no_grad():
             return self.compute_loss(*batch, log_step=True)
 
@@ -322,7 +408,7 @@ class Experiment:
         def make_pbar(loader, training, epoch):
             if training:
                 desc = f"{self.run_name} Epoch {epoch} Train"
-                steps = self.train_grad_updates_per_epoch
+                steps = self.grad_updates_per_epoch
                 c = "green"
             else:
                 desc = f"{self.run_name} Epoch {epoch} Val"
@@ -337,9 +423,9 @@ class Experiment:
 
             self.policy.train()
             for train_step, batch in make_pbar(self.train_dloader, True, epoch):
-                total_step = (epoch * self.train_grad_updates_per_epoch) + train_step
+                total_step = (epoch * self.grad_updates_per_epoch) + train_step
                 log_step = total_step % self.log_interval == 0
-                loss_dict = self.train_step(batch, epoch=epoch, log_step=log_step)
+                loss_dict = self.train_step(batch, log_step=log_step)
                 if log_step:
                     self.log(loss_dict, key="train")
                 # lr scheduling done here so we can see epoch/step
@@ -348,6 +434,5 @@ class Experiment:
             if epoch % self.val_interval == 0:
                 self.policy.eval()
                 for val_step, batch in make_pbar(self.val_dloader, False, epoch):
-                    loss_dict = self.val_step(batch, epoch=epoch)
+                    loss_dict = self.val_step(batch)
                     self.log(loss_dict, key="val")
-                self.log(figures, key="val")

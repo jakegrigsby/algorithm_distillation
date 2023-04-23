@@ -23,7 +23,7 @@ def parse_args():
         default="transformer",
         choices=["transformer", "feedforward"],
     )
-    parser.add_argument("--context_len", type=int, default=100)
+    parser.add_argument("--context_len", type=int, default=300)
     parser.add_argument("--buffer_dir", type=str, default="buffers/")
     args = parser.parse_args()
     return args
@@ -60,15 +60,19 @@ def gather_dset_files(
         assert total_files == 1
         train_files = val_files = use_filenames
 
+    train_files = [os.path.join(buffer_dir, kind, p) for p in train_files]
+    val_files = [os.path.join(buffer_dir, kind, p) for p in val_files]
     return train_files, val_files
 
 
 def train(args):
     # Create Env
     if args.experiment in ["ad_dark", "bc_dark", "rl2_dark"]:
-        envs = [RoomKeyDoor(dark=True, size=8, max_episode_steps=50) for _ in range(2)]
+        envs = [RoomKeyDoor(dark=True, size=8, max_episode_steps=50) for _ in range(20)]
     else:
-        envs = [RoomKeyDoor(dark=False, size=8, max_episode_steps=50) for _ in range(2)]
+        envs = [
+            RoomKeyDoor(dark=False, size=8, max_episode_steps=50) for _ in range(20)
+        ]
 
     # Load Correct Source RL Files
     if args.experiment in ["ad_dark", "ad_light"]:

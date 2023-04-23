@@ -186,8 +186,13 @@ class TransformerEncoder(nn.Module):
         self,
         state_dim: int,
         max_seq_len: int,
-        d_model: int = 64,
-        d_ff: int = 256,
+        d_model: int = 128,
+        # they use 64 d_model, 2048 (!) d_ff which is so weird that
+        # it either has to be critical or a mistake.
+        # 64/2048 is basically saying the sequence barely matters
+        # and it's all about memorizing state + position --> action.
+        # Let's at least go to 6x d_model
+        d_ff: int = 768,
         d_emb_ff: int = None,
         n_heads: int = 4,
         layers: int = 4,
@@ -278,7 +283,7 @@ class Actor(nn.Module):
         state_dim: int,
         action_dim: int,
         n_layers: int = 2,
-        d_hidden: int = 256,
+        d_hidden: int = 128,
         dropout_p: float = 0.0,
     ):
         super().__init__()
