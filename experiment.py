@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 
 from networks import TransformerEncoder, FeedForwardEncoder
 from agent import Agent
-from datasets import ADDataset
+from datasets import ADDataset, RL2Dataset
 
 
 def get_grad_norm(model):
@@ -48,6 +48,7 @@ class Experiment:
     train_dset_files: List[str]
     val_dset_files: List[str]
     log_to_wandb: bool = False
+    rl2_mode: bool = False
 
     # Method
     architecture: str = "transformer"
@@ -83,13 +84,14 @@ class Experiment:
         self.init_logger()
 
     def init_dsets(self):
-        self.train_dset = ADDataset(
+        dsetCls = RL2Dataset if self.rl2_mode else ADDataset
+        self.train_dset = dsetCls(
             buffer_filenames=self.train_dset_files,
             force_dark=self.force_dark,
             context_length=self.context_len,
             epoch_length=self.grad_updates_per_epoch * self.batch_size,
         )
-        self.val_dset = ADDataset(
+        self.val_dset = dsetCls(
             buffer_filenames=self.val_dset_files,
             force_dark=self.force_dark,
             context_length=self.context_len,
@@ -197,25 +199,20 @@ class Experiment:
         return_history = [[] for _ in range(num_envs)]
 
         # fill each context with the starting observation.
-        # careful to match the training format where the first
-        # timestep has fake actions, reward, and dones (because
-        # all we've seen so far is the initial state).
         init_context = []
         init_action = torch.zeros(
-            (1, envs[0].action_space.n), device=self.DEVICE
-        ).float()
-        init_done = torch.zeros((1, 1), device=self.DEVICE).float()
+            (
+                1,
+                envs[0].action_space.n,
+            )
+        )
+        init_done = torch.zeros((1, 1))
         init_rew = torch.zeros_like(init_done)
         for i, env in enumerate(envs):
-            init_state = (
-                torch.from_numpy(env.reset(new_task=True))
-                .to(self.DEVICE)
-                .float()
-                .unsqueeze(0)
-            )
+            init_state = torch.from_numpy(env.reset(new_task=True)).unsqueeze(0)
             init_seq = torch.cat((init_state, init_action, init_rew, init_done), dim=-1)
             init_context.append(init_seq)
-        context.append(torch.stack(init_context, dim=0))
+        context.append(torch.stack(init_context, dim=0).to(self.DEVICE))
 
         if verbose:
             iter_ = tqdm(
@@ -252,21 +249,19 @@ class Experiment:
                     next_state = env.reset(new_task=False)
 
                 # build meta-info for this timestep in this env
-                ctxt_action = torch.zeros(
-                    (1, env.action_space.n), device=self.DEVICE
-                ).float()
-                ctxt_action[:, raw_action] = 1.0
-                ctxt_state = (
-                    torch.from_numpy(next_state).to(self.DEVICE).float().unsqueeze(0)
-                )
-                ctxt_rew = torch.Tensor([rew]).to(self.DEVICE).float().unsqueeze(0)
-                ctxt_done = torch.Tensor([done]).to(self.DEVICE).float().unsqueeze(0)
-                next_ctxt_i = torch.cat(
-                    (ctxt_state, ctxt_action, ctxt_rew, ctxt_done), dim=-1
+                ctxt_action = torch.zeros((env.action_space.n,))
+                ctxt_action[raw_action] = 1.0
+                ctxt_state = torch.from_numpy(next_state)
+                ctxt_rew_done = torch.Tensor([rew, done])
+                next_ctxt_i = (
+                    torch.cat((ctxt_state, ctxt_action, ctxt_rew_done), dim=-1)
+                    .float()
+                    .unsqueeze(0)
                 )
                 next_context.append(next_ctxt_i)
+
             # extend the context sequence by 1
-            context.append(torch.stack(next_context, dim=0))
+            context.append(torch.stack(next_context, dim=0).to(self.DEVICE))
 
             if render:
                 # this only renders the last of the "parallel" envs
@@ -282,9 +277,25 @@ class Experiment:
         mean_last_five_ep_return = np.mean(
             [np.mean([r[i][-1] for i in range(-5, 0)]) for r in all_returns]
         )
+
+        # compute total return over first 500 timesteps, to compare with RL^2
+        mean_over_first_500_steps = []
+        for history in all_returns:
+            total = 0.0
+            for step, ret in history:
+                if step <= 500:
+                    total += ret
+            mean_over_first_500_steps.append(total)
+        mean_over_first_500_steps = np.mean(mean_over_first_500_steps)
+
         figures = self.make_evaluation_figures(all_returns)
         self.log(
-            figures | {"mean_last_five_ep_return": mean_last_five_ep_return}, "val"
+            figures
+            | {
+                "mean_last_five_ep_return": mean_last_five_ep_return,
+                "mean_over_first_500_steps": mean_over_first_500_steps,
+            },
+            "val",
         )
 
     def make_evaluation_figures(self, return_history):

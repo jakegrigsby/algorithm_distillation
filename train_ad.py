@@ -30,7 +30,16 @@ def parse_args():
     return args
 
 
-def gather_dset_files(
+def gather_dset_files_rl2(buffer_dir: str):
+    path = os.path.join(buffer_dir, "merged")
+    files = [os.path.join(path, f) for f in os.listdir(path)]
+    random.shuffle(files)
+    split = int(0.8 * len(files))
+    train_files, val_files = files[:split], files[-split:]
+    return train_files, val_files
+
+
+def gather_dset_files_sac(
     kind: str = "Nx1", dark: bool = True, buffer_dir: str = "buffers/"
 ):
     assert kind in ["Nx1", "1xN"]
@@ -77,15 +86,15 @@ def train(args):
 
     # Load Correct Source RL Files
     if args.experiment in ["ad_dark", "ad_light"]:
-        train_files, val_files = gather_dset_files(
+        train_files, val_files = gather_dset_files_sac(
             kind="Nx1", dark=False, buffer_dir=args.buffer_dir
         )
     elif args.experiment in ["bc_dark", "bc_light"]:
-        train_files, val_files = gather_dset_files(
+        train_files, val_files = gather_dset_files_sac(
             kind="1xN", dark=args.experiment == "bc_dark", buffer_dir=args.buffer_dir
         )
-    else:
-        assert False
+    elif args.experiment == "rl2_dark":
+        train_files, val_files = gather_dset_files_rl2(args.buffer_dir)
 
     # Train
     experiment = Experiment(
@@ -99,6 +108,7 @@ def train(args):
         architecture=args.model,
         context_len=args.context_len,
         force_dark=args.experiment == "ad_dark",
+        rl2_mode=args.experiment == "rl2_dark",
         log_dir="logs",
         half_precision=False,
     )

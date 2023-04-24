@@ -63,10 +63,47 @@ class ADDataset(Dataset):
         return seq, a
 
 
+class RL2Dataset(ADDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from gcrl2.hindsight import Trajectory
+
+    def __getitem__(self, i):
+        filename = random.choice(self.filenames)
+
+        with open(filename, "rb") as f:
+            traj = pickle.load(f)
+
+        # gather data from the gcrl2 Trajectory obejct
+        s = np.array([t.obs for t in traj[:-1]])
+        all_action = np.array([t.prev_action for t in traj])
+        prev_action = all_action[:-1]
+        action = all_action[1:]
+        r = np.array([t.real_reward for t in traj[:-1]])[:, np.newaxis]
+        d = np.array([t.reset for t in traj[:-1]])[:, np.newaxis]
+        # match zeroed-out format of ADDataset
+        r[0, :] = 0.0
+        d[0, :] = 0.0
+        prev_action[0, :] = 0.0
+
+        # select random slice
+        L = len(s)
+        random_start = random.randint(0, L - self.context_length - 1)
+        time = slice(random_start, random_start + self.context_length)
+        seq = np.concatenate(
+            (s[time], prev_action[time], r[time], d[time]), axis=-1
+        ).astype(np.float32)
+        a = action[time].argmax(-1).astype(np.int_)
+        return seq, a
+
+
 if __name__ == "__main__":
 
-    dset = ADDataset(
-        ["buffers/Nx1/sac_light_key_[3, 0]_door_[7, 1]_3877_steps_50_size_8.buffer"],
+    dset = RL2Dataset(
+        [
+            "/mnt/data0/grigsby/RL2_size_8_ep_10_steps_50_meta_info_True/train/RL2size8ep10steps50metainfoTrue_359248_1682060648.9039154_23.traj"
+        ],
+        # ["buffers/Nx1/sac_light_key_[3, 0]_door_[7, 1]_3877_steps_50_size_8.buffer"],
         20,
         True,
         100,

@@ -90,7 +90,7 @@ class RoomKeyDoor(gym.Env):
         goal_x, goal_y = self.goal
         key_x, key_y = self.key
         img[player_x][player_y] = "P"
-        img[goal_x][goal_y] = "G"
+        img[goal_x][goal_y] = "D"
         img[key_x][key_y] = "K"
         print(
             f"{'Dark' if self.dark else 'Light'} Room Key-Door: Key = {self.key}, Door = {self.goal}, Player = {self.pos}"
